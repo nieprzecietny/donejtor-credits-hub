@@ -28,6 +28,37 @@ public class SponsorWebhook
     {
         _logger.LogInformation("GitHub Sponsors webhook received");
 
+        try
+        {
+            var data = await ReadWebhookAsync(req);
+            await SaveToTableAsync(data.SponsorGuid, data.SponsorLogin, data.Payload);
+            await CommitToRepositoryAsync(data.SponsorGuid, data.SponsorLogin);
+
+            var ok = req.CreateResponse(HttpStatusCode.OK);
+            await ok.WriteStringAsync("OK");
+            return ok;
+        }
+        catch (HttpException ex)
+        {
+            var res = req.CreateResponse(ex.Status);
+            await res.WriteStringAsync(ex.Message);
+            return res;
+        }
+    }
+
+    private record WebhookData(string SponsorLogin, string SponsorGuid, string Payload);
+
+    private class HttpException : Exception
+    {
+        public HttpStatusCode Status { get; }
+        public HttpException(HttpStatusCode status, string message) : base(message)
+        {
+            Status = status;
+        }
+    }
+
+    private async Task<WebhookData> ReadWebhookAsync(HttpRequestData req)
+    {
         string body = await new StreamReader(req.Body).ReadToEndAsync();
         var bodyBytes = Encoding.UTF8.GetBytes(body);
 
@@ -36,26 +67,20 @@ public class SponsorWebhook
         {
             if (!req.Headers.TryGetValues("X-Hub-Signature-256", out var sigHeaders))
             {
-                var res = req.CreateResponse(HttpStatusCode.Unauthorized);
-                await res.WriteStringAsync("Missing signature");
-                return res;
+                throw new HttpException(HttpStatusCode.Unauthorized, "Missing signature");
             }
             var signatureHeader = sigHeaders.First();
             var parts = signatureHeader.Split('=');
             if (parts.Length != 2 || parts[0] != "sha256")
             {
-                var res = req.CreateResponse(HttpStatusCode.Unauthorized);
-                await res.WriteStringAsync("Invalid signature");
-                return res;
+                throw new HttpException(HttpStatusCode.Unauthorized, "Invalid signature");
             }
             using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
             var hash = hmac.ComputeHash(bodyBytes);
             var expected = Convert.ToHexString(hash).ToLowerInvariant();
             if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(expected), Encoding.ASCII.GetBytes(parts[1])))
             {
-                var res = req.CreateResponse(HttpStatusCode.Unauthorized);
-                await res.WriteStringAsync("Invalid signature");
-                return res;
+                throw new HttpException(HttpStatusCode.Unauthorized, "Invalid signature");
             }
         }
 
@@ -66,30 +91,28 @@ public class SponsorWebhook
         }
         catch (JsonException)
         {
-            var res = req.CreateResponse(HttpStatusCode.BadRequest);
-            await res.WriteStringAsync("Invalid JSON");
-            return res;
+            throw new HttpException(HttpStatusCode.BadRequest, "Invalid JSON");
         }
 
         if (!payload.RootElement.TryGetProperty("sponsorship", out var sponsorship) ||
             !sponsorship.TryGetProperty("sponsor", out var sponsor) ||
             !sponsor.TryGetProperty("login", out var loginProp))
         {
-            var res = req.CreateResponse(HttpStatusCode.BadRequest);
-            await res.WriteStringAsync("Missing sponsor login");
-            return res;
+            throw new HttpException(HttpStatusCode.BadRequest, "Missing sponsor login");
         }
 
         string sponsorLogin = loginProp.GetString() ?? string.Empty;
         if (string.IsNullOrEmpty(sponsorLogin))
         {
-            var res = req.CreateResponse(HttpStatusCode.BadRequest);
-            await res.WriteStringAsync("Missing sponsor login");
-            return res;
+            throw new HttpException(HttpStatusCode.BadRequest, "Missing sponsor login");
         }
 
         string sponsorGuid = Guid.NewGuid().ToString();
+        return new WebhookData(sponsorLogin, sponsorGuid, body);
+    }
 
+    private async Task SaveToTableAsync(string sponsorGuid, string sponsorLogin, string payload)
+    {
         string tableConn = Environment.GetEnvironmentVariable("TABLE_CONNECTION") ?? string.Empty;
         if (!string.IsNullOrEmpty(tableConn))
         {
@@ -99,11 +122,14 @@ public class SponsorWebhook
             var entity = new TableEntity("Sponsor", sponsorGuid)
             {
                 {"github_login", sponsorLogin},
-                {"payload", body}
+                {"payload", payload}
             };
             await table.AddEntityAsync(entity);
         }
+    }
 
+    private async Task CommitToRepositoryAsync(string sponsorGuid, string sponsorLogin)
+    {
         string token = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? string.Empty;
         string repoName = Environment.GetEnvironmentVariable("GITHUB_REPO") ?? string.Empty;
         if (!string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(repoName))
@@ -123,9 +149,5 @@ public class SponsorWebhook
                 await client.Repository.Content.CreateFile(owner, repo, path, createRequest);
             }
         }
-
-        var ok = req.CreateResponse(HttpStatusCode.OK);
-        await ok.WriteStringAsync("OK");
-        return ok;
     }
 }
