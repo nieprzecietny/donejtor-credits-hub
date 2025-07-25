@@ -46,7 +46,7 @@ public class SponsorWebhook
         }
     }
 
-    private record WebhookData(string SponsorLogin, string SponsorGuid, string Payload);
+    protected record WebhookData(string SponsorLogin, string SponsorGuid, string Payload);
 
     private class HttpException : Exception
     {
@@ -57,7 +57,7 @@ public class SponsorWebhook
         }
     }
 
-    private async Task<WebhookData> ReadWebhookAsync(HttpRequestData req)
+    protected virtual async Task<WebhookData> ReadWebhookAsync(HttpRequestData req)
     {
         string body = await new StreamReader(req.Body).ReadToEndAsync();
         var bodyBytes = Encoding.UTF8.GetBytes(body);
@@ -111,7 +111,7 @@ public class SponsorWebhook
         return new WebhookData(sponsorLogin, sponsorGuid, body);
     }
 
-    private async Task SaveToTableAsync(string sponsorGuid, string sponsorLogin, string payload)
+    protected virtual async Task SaveToTableAsync(string sponsorGuid, string sponsorLogin, string payload)
     {
         string tableConn = Environment.GetEnvironmentVariable("TABLE_CONNECTION") ?? string.Empty;
         if (!string.IsNullOrEmpty(tableConn))
@@ -128,7 +128,7 @@ public class SponsorWebhook
         }
     }
 
-    private async Task CommitToRepositoryAsync(string sponsorGuid, string sponsorLogin)
+    protected virtual async Task CommitToRepositoryAsync(string sponsorGuid, string sponsorLogin)
     {
         string token = Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? string.Empty;
         string repoName = Environment.GetEnvironmentVariable("GITHUB_REPO") ?? string.Empty;
